@@ -3,79 +3,64 @@
     public class ReservationService
     {
 
-        public long BookReservation(Reservation reservashin)
+        private readonly IReservationValidator _validator;
+        private readonly IRoomPricingStrategy _pricing;
+        private readonly IReservationRepository _repository;
+        private readonly IWeatherApi _weather;
+
+        public ReservationService(
+            IReservationValidator validator = null,
+            IRoomPricingStrategy pricing = null,
+            IReservationRepository repository = null,
+            IWeatherApi weather = null)
         {
-            ArgumentNullException.ThrowIfNull(reservashin);
+            _validator = validator ?? new ReservationValidator();
+            _pricing = pricing ?? new PricingStrategy();
+            _repository = repository ?? new ReservationRepository();
+            _weather = weather ?? new ExternalWeatherApi();
+        }
 
-            if (string.IsNullOrEmpty(reservashin.GuestFirstName))
-            {
-                return 0;
-            }
 
-            if (string.IsNullOrEmpty(reservashin.GuestLastName))
-            {
-                return 0;
-            }
+        public long BookReservation(Reservation reservation)
+        {
+            if (!_validator.IsValid(reservation)) return 0;
 
-            if (!reservashin.guestEmail.Contains('@'))
-            {
-                return 0;
-            }
+            reservation.PricePerNight = _pricing.GetBasePrice(
+                reservation.RoomType
+            );
 
-            if(reservashin.CheckOutDate <= reservashin.CheckInDate)
-            {
-                return 0;
-            }
+            if (reservation.PricePerNight == 0) return 0;
 
-            if(reservashin.CheckInDate >= reservashin.CheckOutDate) {
-                return 0;
-            }
+            reservation.PricePerNight = _pricing.ApplySmokingSurcharge(
+                reservation.PricePerNight,
+                reservation.SmokingOrNonSmoking
+            );
 
-            if(reservashin.NumberOfAdditionalGuests > 2)
-            {
-                return 0;
-            }
-
-            if (reservashin.RoomType == "Single")
-            {
-                reservashin.PricePerNight = 100;
-            }
-            else if (reservashin.RoomType == "Double")
-            {
-                reservashin.PricePerNight = 200;
-            }
-            else if (reservashin.RoomType == "Suite")
-            {
-                reservashin.PricePerNight = 300;
-            }
-            else
-            {
-                return 0;
-            }
-
-            if(reservashin.SmokingOrNonSmoking == "Smoking")
-            {
-                reservashin.PricePerNight *= 1.05;
-            }            
-            
-            reservashin.Total = reservashin.PricePerNight * (reservashin.CheckOutDate - reservashin.CheckInDate).Days;
-
-            var weatherService = new ExternalWeatherApi();
+            string forecastSummary = string.Empty;
             try
             {
-                var forecast = weatherService.GetForecast(DateOnly.FromDateTime(reservashin.CheckInDate), DateOnly.FromDateTime(reservashin.CheckOutDate));
-
-                if (forecast.Summary == "Freezing" || forecast.Summary == "Sweltering")
-                {
-                    reservashin.Total *= 1.2;
-                }
+                forecastSummary = _weather.GetForecast(
+                    DateOnly.FromDateTime(reservation.CheckInDate),
+                    DateOnly.FromDateTime(reservation.CheckOutDate)
+                )?.Summary ?? string.Empty;
             }
-            catch(Exception ex)
+            catch
             {
-                
+                Console.WriteLine("Failed to get weather forecast.");
             }
 
-            return ReservationDb.AddReservation(reservashin);            
+            reservation.PricePerNight = _pricing.ApplyWeatherSurcharge(
+                reservation.PricePerNight,
+                forecastSummary
+            );
+
+
+            reservation.Total =
+                reservation.PricePerNight * (
+                    reservation.CheckOutDate - reservation.CheckInDate
+                ).Days;
+
+            return _repository.Add(reservation);
         }
     }
 }
